@@ -1,13 +1,13 @@
 import streamlit as st
 import pandas as pd
 from fpdf import FPDF
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Presupuestador Malacara", page_icon="❄️")
 
-# --- BASE DE DATOS DE PRECIOS ---
+# --- BASE DE DATOS DE PRECIOS Y HORARIOS ---
 PRECIOS_ALQUILER = {
     "Esquís Gama Bronce": {
         "Equipo Completo": [21.00, 38.50, 49.00, 58.00, 67.50],
@@ -74,23 +74,24 @@ NIVELES_ESQUI = [
 ]
 
 EDADES_ALUMNOS = ["5-8 años", "9-12 años", "Adulto (>13 años)"]
+HORARIOS_COLECTIVAS = ["10:00 - 13:00", "13:00 - 16:00"]
+HORARIOS_PARTICULARES = [f"{h}:00" for h in range(9, 18)]
 
 # --- FUNCIONES AUXILIARES ---
-def calcular_precio_clases(tipo, num_personas, num_dias_horas):
-    if num_personas == 0: return 0, "", "", 0
+def calcular_precio_bloque(tipo, alumnos, duracion):
+    num_personas = len(alumnos)
+    if num_personas == 0: return 0, 0
     
     if tipo == "Colectiva (3h/día)":
         precio_unitario = 55
-        total = precio_unitario * num_personas * num_dias_horas
-        descripcion = f"Cursillo Colectivo ({num_dias_horas} días)"
-        detalle = f"{num_dias_horas} días x {num_personas} pers"
-        return total, descripcion, detalle, precio_unitario
+        # En colectivas, la duración es el número de días
+        total = precio_unitario * num_personas * duracion
+        return total, precio_unitario
     else: # Particular
+        # En particular, la duración son Horas Totales, independiente de los días seleccionados
         precio_hora = 50 + (max(0, num_personas - 1) * 5)
-        total = precio_hora * num_dias_horas
-        descripcion = f"Clase Particular ({num_dias_horas} horas totales)"
-        detalle = f"{num_dias_horas}h totales x {num_personas} pers"
-        return total, descripcion, detalle, precio_hora
+        total = precio_hora * duracion
+        return total, precio_hora
 
 def calcular_precio_alquiler(gama, equipo, dias):
     if dias < 1: return 0
@@ -101,14 +102,15 @@ def calcular_precio_alquiler(gama, equipo, dias):
     except:
         return 0
 
+def get_date_range(start, end):
+    return [start + timedelta(days=x) for x in range((end - start).days + 1)]
+
 # --- CLASE PDF ---
 class PDF(FPDF):
     def header(self):
-        # Logo: Se muestra si existe el archivo 'logo.png' en el mismo directorio
         if os.path.exists("logo.png"):
-            # Ajusta las coordenadas (x, y, w) según tu logo. 
-            self.image('logo.png', 10, 8, 40)
-            self.ln(20) # Salto de línea después del logo
+            self.image('logo.png', 10, 8, 50)
+            self.ln(25)
         else:
             self.set_font('Arial', 'B', 24)
             self.set_text_color(220, 50, 50) 
@@ -126,119 +128,192 @@ class PDF(FPDF):
 # --- INTERFAZ STREAMLIT ---
 st.title("⛷️ Presupuestador Malacara Pro")
 
-# --- GENERAR ID UNICO ---
-# Usamos fecha y hora para simular correlativo sin base de datos
 id_presupuesto = "MAL-" + datetime.now().strftime("%Y%m%d-%H%M")
+fecha_solicitud = datetime.now().strftime("%d/%m/%Y")
 
-# 1. DATOS DEL CLIENTE
+# 1. DATOS DEL CLIENTE Y FECHAS
 with st.container():
-    st.markdown("### 1. Detalles del Cliente")
+    st.markdown("### 1. Detalles del Cliente y Fechas")
     col1, col2 = st.columns(2)
     cliente_nombre = col1.text_input("Nombre del Titular", "Iván Fernández")
-    cliente_fechas = col2.text_input("Fechas del Viaje", "22/12 - 24/12")
-    cliente_telefono = col1.text_input("Teléfono")
-    cliente_email = col2.text_input("Email")
-    fecha_solicitud = datetime.now().strftime("%d/%m/%Y")
-    st.caption(f"ID Presupuesto: {id_presupuesto}")
+    cliente_dni = col2.text_input("DNI / Pasaporte")
+    col3, col4 = st.columns(2)
+    cliente_telefono = col3.text_input("Teléfono")
+    cliente_email = col4.text_input("Email")
+    
+    st.divider()
+    st.markdown("#### 📅 Selección de Días de Esquí")
+    
+    cd1, cd2 = st.columns(2)
+    f_inicio = cd1.date_input("Fecha Llegada", datetime.now())
+    f_fin = cd2.date_input("Fecha Salida", datetime.now() + timedelta(days=2))
+    
+    # Generar rango de fechas
+    if f_fin >= f_inicio:
+        dias_posibles = get_date_range(f_inicio, f_fin)
+        dias_formateados = [d.strftime("%d/%m") for d in dias_posibles]
+        
+        # Multiselect para elegir días específicos
+        st.info("Desmarca los días que NO se vaya a esquiar:")
+        dias_seleccionados = st.multiselect(
+            "Días Activos de Esquí", 
+            dias_posibles, 
+            default=dias_posibles,
+            format_func=lambda x: x.strftime("%d/%m/%Y")
+        )
+        
+        cantidad_dias_esqui = len(dias_seleccionados)
+        texto_fechas_pdf = ", ".join([d.strftime("%d/%m") for d in dias_seleccionados])
+        
+        if cantidad_dias_esqui > 0:
+            st.success(f"🗓️ Total días efectivos para cálculo: **{cantidad_dias_esqui} días**")
+        else:
+            st.warning("No hay días seleccionados.")
+            cantidad_dias_esqui = 0
+            texto_fechas_pdf = "Sin fechas seleccionadas"
+    else:
+        st.error("La fecha de salida debe ser posterior a la de llegada.")
+        cantidad_dias_esqui = 0
+        texto_fechas_pdf = "Error en fechas"
 
-# 2. CLASES
+    st.caption(f"🆔 Ref: **{id_presupuesto}**")
+
+# 2. GESTIÓN DE CLASES
 st.divider()
 st.markdown("### 2. Clases de Esquí / Snowboard")
 
-# Variables de estado para alumnos
-if 'alumnos' not in st.session_state:
-    st.session_state['alumnos'] = []
+if 'carrito_clases' not in st.session_state:
+    st.session_state['carrito_clases'] = []
+    
+with st.container():
+    st.markdown("#### 🛠️ Configurar Nuevo Grupo de Clase")
+    
+    c_conf1, c_conf2 = st.columns(2)
+    new_estacion = c_conf1.selectbox("Estación", ["Astún", "Candanchú"], key="new_est")
+    new_tipo = c_conf2.selectbox("Tipo de Clase", ["Colectiva (3h/día)", "Particular"], key="new_tipo")
+    
+    c_conf3, c_conf4 = st.columns(2)
+    
+    # Lógica de días/horas según tipo
+    if new_tipo == "Colectiva (3h/día)":
+        # Bloqueamos el input y usamos la cantidad calculada arriba
+        st.caption(f"ℹ️ Duración automática basada en calendario: {cantidad_dias_esqui} días")
+        new_duracion = cantidad_dias_esqui
+        new_horario = c_conf4.selectbox("Horario Turno", HORARIOS_COLECTIVAS, key="new_hor")
+        lbl_dur = "días"
+    else:
+        # Particulares: Horas totales manuales
+        new_duracion = c_conf3.number_input("Horas Totales (Indep. días)", 1, 20, 2, key="new_dur")
+        new_horario = c_conf4.selectbox("Hora Inicio", HORARIOS_PARTICULARES, key="new_hor")
+        lbl_dur = "horas"
 
-# Configuración General Clases
-col_conf1, col_conf2, col_conf3 = st.columns(3)
-estacion = col_conf1.selectbox("Estación", ["Astún", "Candanchú"])
-tipo_clase = col_conf2.selectbox("Tipo de Clase", ["Ninguna", "Colectiva (3h/día)", "Particular"])
-
-duracion_clase = 0
-lbl_duracion = "-"
-
-if tipo_clase == "Colectiva (3h/día)":
-    duracion_clase = col_conf3.number_input("Días de Clase", 1, 5, 3)
-    lbl_duracion = "días"
-elif tipo_clase == "Particular":
-    duracion_clase = col_conf3.number_input("Total Horas Contratadas", 1, 20, 2)
-    lbl_duracion = "horas"
-
-# Añadir Alumnos
-if tipo_clase != "Ninguna":
-    st.markdown("#### Añadir Alumnos a la Clase")
-    with st.expander("📝 Formulario Nuevo Alumno", expanded=True):
-        c_al1, c_al2 = st.columns(2)
-        nuevo_nombre = c_al1.text_input("Nombre Alumno")
-        nuevo_edad = c_al2.selectbox("Tramo de Edad", EDADES_ALUMNOS)
+    # Alumnos provisionales
+    if 'temp_alumnos' not in st.session_state:
+        st.session_state['temp_alumnos'] = []
         
-        c_al3, c_al4 = st.columns(2)
-        nuevo_mod = c_al3.radio("Modalidad", ["Esquí", "Snowboard"], horizontal=True)
-        nuevo_nivel = c_al4.selectbox("Nivel", NIVELES_ESQUI)
+    with st.expander("Añadir Alumnos a este grupo", expanded=True):
+        ca1, ca2 = st.columns(2)
+        n_nombre = ca1.text_input("Nombre Alumno", key="n_nom")
+        n_edad = ca2.selectbox("Edad", EDADES_ALUMNOS, key="n_ed")
+        ca3, ca4 = st.columns(2)
+        n_mod = ca3.radio("Modalidad", ["Esquí", "Snowboard"], horizontal=True, key="n_mod")
+        n_niv = ca4.selectbox("Nivel", NIVELES_ESQUI, key="n_niv")
         
         if st.button("➕ Añadir Alumno"):
-            if nuevo_nombre:
-                st.session_state['alumnos'].append({
-                    "nombre": nuevo_nombre,
-                    "edad": nuevo_edad,
-                    "nivel": nuevo_nivel,
-                    "modalidad": nuevo_mod
+            if n_nombre:
+                st.session_state['temp_alumnos'].append({
+                    "nombre": n_nombre,
+                    "edad": n_edad,
+                    "modalidad": n_mod,
+                    "nivel": n_niv
                 })
             else:
-                st.warning("Por favor escribe un nombre.")
+                st.error("Falta el nombre")
 
-    # Listado de Alumnos Añadidos
-    if len(st.session_state['alumnos']) > 0:
-        st.info(f"Alumnos inscritos: {len(st.session_state['alumnos'])}")
-        df_alumnos = pd.DataFrame(st.session_state['alumnos'])
-        st.table(df_alumnos)
+    if len(st.session_state['temp_alumnos']) > 0:
+        st.table(pd.DataFrame(st.session_state['temp_alumnos']))
         
-        if st.button("🗑️ Borrar lista de alumnos"):
-            st.session_state['alumnos'] = []
+        # Validar antes de añadir
+        bloquear_btn = (new_tipo == "Colectiva (3h/día)" and cantidad_dias_esqui == 0)
+        
+        if bloquear_btn:
+            st.error("⚠️ No puedes añadir clase colectiva con 0 días seleccionados en el calendario.")
+        else:
+            if st.button("✅ Confirmar y Añadir Grupo", type="primary"):
+                precio_bloque, precio_unit = calcular_precio_bloque(new_tipo, st.session_state['temp_alumnos'], new_duracion)
+                
+                st.session_state['carrito_clases'].append({
+                    "estacion": new_estacion,
+                    "tipo": new_tipo,
+                    "duracion": new_duracion,
+                    "lbl_dur": lbl_dur,
+                    "horario": new_horario,
+                    "alumnos": st.session_state['temp_alumnos'],
+                    "precio_total": precio_bloque,
+                    "precio_unit": precio_unit
+                })
+                st.session_state['temp_alumnos'] = []
+                st.rerun()
+            
+        if st.button("Cancelar Lista"):
+            st.session_state['temp_alumnos'] = []
             st.rerun()
-    else:
-        st.warning("No hay alumnos añadidos aún.")
 
-# Calcular Precio Clases
-precio_clases = 0
-desc_clases = ""
-detalle_clases = ""
-unitario_clases = 0
-num_alumnos_real = len(st.session_state['alumnos'])
+# --- RESUMEN CLASES ---
+st.divider()
+st.subheader("📦 Resumen de Clases Añadidas")
+total_clases_global = 0
 
-# Si el usuario no añade alumnos pero quiere presupuesto rápido, permitimos cálculo manual (opcional)
-# Pero aquí priorizamos la lista. Si la lista está vacía, precio 0.
-if tipo_clase != "Ninguna" and num_alumnos_real > 0:
-    precio_clases, desc_clases, detalle_clases, unitario_clases = calcular_precio_clases(tipo_clase, num_alumnos_real, duracion_clase)
-    st.success(f"💰 Subtotal Clases ({num_alumnos_real} alumnos): {precio_clases}€")
+if len(st.session_state['carrito_clases']) > 0:
+    for idx, grupo in enumerate(st.session_state['carrito_clases']):
+        with st.container():
+            st.markdown(f"**Grupo {idx+1}: {grupo['tipo']} en {grupo['estacion']}**")
+            st.markdown(f"🗓️ {grupo['duracion']} {grupo['lbl_dur']} | ⏰ {grupo['horario']} | 💶 **Subtotal: {grupo['precio_total']}€**")
+            df_g = pd.DataFrame(grupo['alumnos'])
+            st.dataframe(df_g[["nombre", "edad", "nivel"]], use_container_width=True, hide_index=True)
+            total_clases_global += grupo['precio_total']
+            st.divider()
+            
+    if st.button("🗑️ Borrar TODAS las clases"):
+        st.session_state['carrito_clases'] = []
+        st.rerun()
+else:
+    st.info("No hay clases añadidas.")
+
+st.success(f"**Total Clases: {total_clases_global}€**")
 
 
 # 3. ALQUILER DE MATERIAL
-st.divider()
 st.markdown("### 3. Alquiler de Material")
 
 if 'alquileres' not in st.session_state:
     st.session_state['alquileres'] = []
 
 with st.expander("Añadir Equipo de Alquiler"):
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2 = st.columns(2)
     cat_select = c1.selectbox("Gama", list(PRECIOS_ALQUILER.keys()))
     equip_options = list(PRECIOS_ALQUILER[cat_select].keys())
     equip_select = c2.selectbox("Equipo", equip_options)
-    dias_alq = c3.slider("Días Alquiler", 1, 5, 3)
+    
+    # Aquí usamos automáticamente los días del calendario
+    c3, c4 = st.columns(2)
+    st.caption(f"Días de alquiler calculados: {cantidad_dias_esqui}")
     cant_equip = c4.number_input("Cantidad", 1, 10, 1)
     
     if st.button("Añadir Equipo"):
-        precio_unit = calcular_precio_alquiler(cat_select, equip_select, dias_alq)
-        subtotal_linea = precio_unit * cant_equip
-        st.session_state['alquileres'].append({
-            "gama": cat_select,
-            "tipo": equip_select,
-            "dias": dias_alq,
-            "cantidad": cant_equip,
-            "precio_unit": precio_unit,
-            "subtotal": subtotal_linea
-        })
+        if cantidad_dias_esqui > 0:
+            precio_unit = calcular_precio_alquiler(cat_select, equip_select, cantidad_dias_esqui)
+            subtotal_linea = precio_unit * cant_equip
+            st.session_state['alquileres'].append({
+                "gama": cat_select,
+                "tipo": equip_select,
+                "dias": cantidad_dias_esqui,
+                "cantidad": cant_equip,
+                "precio_unit": precio_unit,
+                "subtotal": subtotal_linea
+            })
+        else:
+            st.error("Selecciona días en el calendario primero.")
 
 total_alquiler = 0
 if len(st.session_state['alquileres']) > 0:
@@ -251,11 +326,11 @@ if len(st.session_state['alquileres']) > 0:
 
 st.write(f"**Subtotal Alquiler: {total_alquiler}€**")
 
-# 4. DESCUENTOS Y TOTALES
+# 4. TOTALES
 st.divider()
 st.markdown("### 4. Resumen Final")
 
-subtotal_general = precio_clases + total_alquiler
+subtotal_general = total_clases_global + total_alquiler
 
 col_d1, col_d2 = st.columns(2)
 aplicar_descuento = col_d1.checkbox("¿Aplicar Descuento?")
@@ -274,19 +349,16 @@ total_final = subtotal_general - descuento_total
 
 st.metric(label="TOTAL A PAGAR", value=f"{total_final:.2f}€", delta=f"-{descuento_total:.2f}€" if descuento_total > 0 else None)
 
-# 5. GENERAR PDF
+# 5. PDF
 def create_pdf():
     pdf = PDF()
     pdf.add_page()
-    
     blue_header = (230, 240, 255)
     
-    # ID y Fecha
     pdf.set_font("Arial", '', 10)
     pdf.cell(0, 5, f"Fecha: {fecha_solicitud} | Ref: {id_presupuesto}", 0, 1, 'R')
     pdf.ln(5)
     
-    # Texto intro
     pdf.multi_cell(0, 5, "Gracias por contactar con Malacara Esquí y Snowboard. A continuación, encontrará su presupuesto detallado.")
     pdf.ln(5)
     
@@ -301,9 +373,9 @@ def create_pdf():
     pdf.set_font("Arial", '', 10)
     pdf.cell(60, 6, cliente_nombre, 0, 0)
     pdf.set_font("Arial", 'B', 10)
-    pdf.cell(30, 6, "Fechas:", 0, 0)
+    pdf.cell(30, 6, "DNI/Pass:", 0, 0)
     pdf.set_font("Arial", '', 10)
-    pdf.cell(60, 6, cliente_fechas, 0, 1)
+    pdf.cell(60, 6, cliente_dni, 0, 1)
     
     pdf.set_font("Arial", 'B', 10)
     pdf.cell(30, 6, "Teléfono:", 0, 0)
@@ -313,42 +385,54 @@ def create_pdf():
     pdf.cell(30, 6, "Email:", 0, 0)
     pdf.set_font("Arial", '', 10)
     pdf.cell(60, 6, cliente_email, 0, 1)
+    
+    pdf.ln(2)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(0, 6, "Días seleccionados para esquí:", 0, 1)
+    pdf.set_font("Arial", '', 9)
+    pdf.multi_cell(0, 5, texto_fechas_pdf)
     pdf.ln(5)
     
     # BLOQUE CLASES
-    if tipo_clase != "Ninguna" and num_alumnos_real > 0:
+    if len(st.session_state['carrito_clases']) > 0:
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 8, f"Clases: {tipo_clase} en {estacion}", 0, 1, 'L', fill=True)
-        
-        # Tabla Alumnos
-        pdf.set_font("Arial", 'B', 9)
-        pdf.set_text_color(0, 51, 102)
-        pdf.cell(50, 8, "Alumno", 1, 0, 'C')
-        pdf.cell(30, 8, "Edad", 1, 0, 'C')
-        pdf.cell(30, 8, "Modalidad", 1, 0, 'C')
-        pdf.cell(80, 8, "Nivel", 1, 1, 'C') # Ancho restante
-        
-        pdf.set_text_color(0)
-        pdf.set_font("Arial", '', 8)
-        for al in st.session_state['alumnos']:
-            pdf.cell(50, 8, al['nombre'], 1, 0)
-            pdf.cell(30, 8, al['edad'], 1, 0, 'C')
-            pdf.cell(30, 8, al['modalidad'], 1, 0, 'C')
-            # Nivel recortado si es muy largo
-            nivel_corto = (al['nivel'][:40] + '..') if len(al['nivel']) > 40 else al['nivel']
-            pdf.cell(80, 8, nivel_corto, 1, 1)
-        
-        # Resumen precio clases
+        pdf.cell(0, 8, "Presupuesto de Clases", 0, 1, 'L', fill=True)
         pdf.ln(2)
-        pdf.set_font("Arial", 'B', 10)
-        pdf.cell(140, 8, f"Total Clases ({desc_clases}):", 0, 0, 'R')
-        pdf.cell(50, 8, f"{precio_clases} eur", 0, 1, 'R')
-        pdf.ln(5)
+        
+        for i, grupo in enumerate(st.session_state['carrito_clases']):
+            pdf.set_font("Arial", 'B', 10)
+            pdf.set_fill_color(245, 245, 245)
+            titulo_grupo = f"Grupo {i+1}: {grupo['tipo']} - {grupo['estacion']} ({grupo['horario']})"
+            pdf.cell(0, 7, titulo_grupo, 0, 1, 'L', fill=True)
+            
+            pdf.set_font("Arial", 'B', 9)
+            pdf.set_text_color(0, 51, 102)
+            pdf.cell(60, 6, "Alumno", 1, 0)
+            pdf.cell(30, 6, "Edad", 1, 0, 'C')
+            pdf.cell(30, 6, "Modalidad", 1, 0, 'C')
+            pdf.cell(70, 6, "Nivel", 1, 1, 'C') 
+            
+            pdf.set_text_color(0)
+            pdf.set_font("Arial", '', 8)
+            for al in grupo['alumnos']:
+                pdf.cell(60, 6, al['nombre'], 1, 0)
+                pdf.cell(30, 6, al['edad'], 1, 0, 'C')
+                pdf.cell(30, 6, al['modalidad'], 1, 0, 'C')
+                nivel_corto = (al['nivel'][:35] + '..') if len(al['nivel']) > 35 else al['nivel']
+                pdf.cell(70, 6, nivel_corto, 1, 1)
+            
+            pdf.set_font("Arial", 'B', 9)
+            pdf.cell(160, 6, f"Detalle: {len(grupo['alumnos'])} pax x {grupo['duracion']} {grupo['lbl_dur']} | Subtotal Grupo:", 0, 0, 'R')
+            pdf.cell(30, 6, f"{grupo['precio_total']} eur", 0, 1, 'R')
+            pdf.ln(3)
+
+        pdf.ln(2)
 
     # BLOQUE ALQUILER
     if len(st.session_state['alquileres']) > 0:
         pdf.set_font("Arial", 'B', 12)
         pdf.set_text_color(0)
+        pdf.set_fill_color(*blue_header)
         pdf.cell(0, 8, "Presupuesto de Alquiler", 0, 1, 'L', fill=True)
         
         pdf.set_font("Arial", 'B', 9)
@@ -379,8 +463,8 @@ def create_pdf():
     # RESUMEN FINAL
     pdf.set_fill_color(240, 240, 240)
     pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "", 0, 1, fill=True) # Barra gris fondo
-    pdf.set_y(pdf.get_y() - 10) # Volver arriba para escribir encima
+    pdf.cell(0, 10, "", 0, 1, fill=True)
+    pdf.set_y(pdf.get_y() - 10)
     
     texto_total = f"TOTAL PRESUPUESTO: {total_final:.2f} eur"
     pdf.cell(0, 10, texto_total, 0, 1, 'R')
@@ -400,7 +484,7 @@ def create_pdf():
     pdf.set_font("Arial", '', 9)
     condiciones = (
         "- Este presupuesto tiene una validez de 15 días.\n"
-        "- Para confirmar la reserva, se requiere un depósito del 30%.\n"
+        "- Para confirmar la reserva, contacte con nosotros.\n"
         "- Cancelaciones con menos de 48 horas conllevan cargo.\n"
         "- Los precios están sujetos a cambios según la temporada."
     )
